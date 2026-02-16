@@ -1,88 +1,42 @@
-from itertools import repeat
+from typing import Any, Dict, Tuple
 
+import torch
 from hydra.utils import instantiate
-
-from src.datasets.collate import collate_fn
-from src.utils.init_utils import set_worker_seed
+from torch.utils.data import DataLoader
 
 
-def inf_loop(dataloader):
+def _default_collate(batch):
+    # batch: list[dict]
+    # collate wav to [B, T]
+    wav = torch.stack([b["wav"] for b in batch], dim=0)
+    paths = [b.get("path", "") for b in batch]
+    return {"wav": wav, "path": paths}
+
+
+def get_dataloaders(config, device: str) -> Tuple[Dict[str, DataLoader], Any]:
     """
-    Wrapper function for endless dataloader.
-    Used for iteration-based training scheme.
-
-    Args:
-        dataloader (DataLoader): classic finite dataloader.
-    """
-    for loader in repeat(dataloader):
-        yield from loader
-
-
-def move_batch_transforms_to_device(batch_transforms, device):
-    """
-    Move batch_transforms to device.
-
-    Notice that batch transforms are applied on the batch
-    that may be on GPU. Therefore, it is required to put
-    batch transforms on the device. We do it here.
-
-    Batch transforms are required to be an instance of nn.Module.
-    If several transforms are applied sequentially, use nn.Sequential
-    in the config (not torchvision.Compose).
-
-    Args:
-        batch_transforms (dict[Callable] | None): transforms that
-            should be applied on the whole batch. Depend on the
-            tensor name.
-        device (str): device to use for batch transforms.
-    """
-    for transform_type in batch_transforms.keys():
-        transforms = batch_transforms.get(transform_type)
-        if transforms is not None:
-            for transform_name in transforms.keys():
-                transforms[transform_name] = transforms[transform_name].to(device)
-
-
-def get_dataloaders(config, device):
-    """
-    Create dataloaders for each of the dataset partitions.
-    Also creates instance and batch transforms.
-
-    Args:
-        config (DictConfig): hydra experiment config.
-        device (str): device to use for batch transforms.
     Returns:
-        dataloaders (dict[DataLoader]): dict containing dataloader for a
-            partition defined by key.
-        batch_transforms (dict[Callable] | None): transforms that
-            should be applied on the whole batch. Depend on the
-            tensor name.
+      dataloaders: dict with at least "train"
+      batch_transforms: callable or None (applied to already-collated batch)
     """
-    # transforms or augmentations init
-    batch_transforms = instantiate(config.transforms.batch_transforms)
-    move_batch_transforms_to_device(batch_transforms, device)
+    train_ds = instantiate(config.datasets.train)
 
-    # dataset partitions init
-    datasets = instantiate(config.datasets)  # instance transforms are defined inside
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=config.dataloader.batch_size,
+        shuffle=True,
+        num_workers=config.dataloader.num_workers,
+        pin_memory=(device.startswith("cuda")),
+        drop_last=True,
+        collate_fn=_default_collate,
+    )
 
-    # dataloaders init
-    dataloaders = {}
-    for dataset_partition in config.datasets.keys():
-        dataset = datasets[dataset_partition]
-
-        assert config.dataloader.batch_size <= len(dataset), (
-            f"The batch size ({config.dataloader.batch_size}) cannot "
-            f"be larger than the dataset length ({len(dataset)})"
-        )
-
-        partition_dataloader = instantiate(
-            config.dataloader,
-            dataset=dataset,
-            collate_fn=collate_fn,
-            drop_last=(dataset_partition == "train"),
-            shuffle=(dataset_partition == "train"),
-            worker_init_fn=set_worker_seed,
-        )
-        dataloaders[dataset_partition] = partition_dataloader
+    dataloaders = {"train": train_loader}
+    
+    batch_transforms = None
+    if "batch_transforms" in config and config.batch_transforms is not None:
+        batch_transforms = instantiate(config.batch_transforms)
+        if hasattr(batch_transforms, "to"):
+            batch_transforms = batch_transforms.to(device)
 
     return dataloaders, batch_transforms

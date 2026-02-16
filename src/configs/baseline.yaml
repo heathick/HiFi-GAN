@@ -1,30 +1,92 @@
 defaults:
-  - model: baseline
-  - writer: wandb
-  - metrics: example
-  - datasets: example
-  - dataloader: example
-  - transforms: example
   - _self_
-optimizer:
-  _target_: torch.optim.Adam
-  lr: 3e-4
-lr_scheduler:
-  _target_: torch.optim.lr_scheduler.StepLR
-  gamma: 0.9
-  step_size: ${trainer.epoch_len}
-loss_function:
-  _target_: src.loss.ExampleLoss
+
 trainer:
-  log_step: 50
-  n_epochs: 100
-  epoch_len: 500
-  device_tensors: ["data_object", "labels"] # which tensors should be on device (ex. GPU)
-  resume_from: null # null or path to the checkpoint dir with *.pth and config.yaml
-  device: auto # device name or "auto"
-  override: False # if True, will override the previous run with the same name
-  monitor: "max test_MulticlassAccuracy" # "off" or "max/min metric_name", i.e. our goal is to maximize/minimize metric
-  save_period: 5 # checkpoint each save_period epochs in addition to the best epoch
-  early_stop: ${trainer.n_epochs} # epochs for early stopping
+  seed: 42
+  device: auto
+  amp: true
+  max_steps: 20000
+  log_every: 50
   save_dir: "saved"
-  seed: 1
+  resume_from: null
+  override: true
+
+dataloader:
+  batch_size: 8
+  num_workers: 4
+
+datasets:
+  train:
+    _target_: src.datasets.ruslan_dataset.RuslanWavDataset
+    data_dir: data/ruslan
+    segment_size: 32768
+    target_sr: 22050
+    mono: true
+    normalize: true
+    random_crop: true
+    seed: ${trainer.seed}
+
+batch_transforms: null
+
+mel_transform:
+  _target_: src.transforms.hifigan_mel.HiFiGANMel
+  sr: 22050
+  n_fft: 1024
+  hop_length: 256
+  win_length: 1024
+  n_mels: 80
+  fmin: 0.0
+  fmax: 8000.0
+  center: true
+  pad_mode: reflect
+
+model:
+  _target_: src.model.baseline_model.HiFiGAN
+  generator: {}
+  msd: {}
+  mpd: {}
+
+loss_function:
+  _target_: src.loss.hifigan_loss.HiFiGANLoss
+  lambda_mel: 45.0
+  lambda_fm: 2.0
+
+
+metrics: {}
+
+optimizer:
+  _target_: torch.optim.AdamW
+  lr: 0.0002
+  betas: [0.8, 0.99]
+  weight_decay: 0.0
+
+optimizer_d:
+  _target_: torch.optim.AdamW
+  lr: 0.0002
+  betas: [0.8, 0.99]
+  weight_decay: 0.0
+
+
+lr_scheduler:
+  _target_: torch.optim.lr_scheduler.ExponentialLR
+  gamma: 0.999
+
+writer:
+  _target_: src.logger.cometml.CometMLWriter
+
+  project_name: "hifigan"
+  workspace: "cnopkaf16"
+  run_name: "hifigan_ruslan"
+
+  experiment_name: "hifigan_ruslan"
+
+  api_key: ${oc.env:COMET_API_KEY}
+
+  log_code: false
+  log_graph: false
+  log_env_details: false
+  id_length: 32
+  experiment_key: null
+  resume_id: null
+  enable: true
+
