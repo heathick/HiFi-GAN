@@ -5,8 +5,9 @@ trainer:
   seed: 42
   device: auto
   amp: true
-  max_steps: 20000
-  log_every: 50
+  max_steps: 10000
+  log_every: 1
+  save_every: 1000
   save_dir: "saved"
   resume_from: null
   override: true
@@ -19,7 +20,7 @@ datasets:
   train:
     _target_: src.datasets.ruslan_dataset.RuslanWavDataset
     data_dir: data/ruslan
-    segment_size: 32768
+    segment_size: 8192
     target_sr: 22050
     mono: true
     normalize: true
@@ -37,7 +38,7 @@ mel_transform:
   n_mels: 80
   fmin: 0.0
   fmax: 8000.0
-  center: true
+  center: false
   pad_mode: reflect
 
 model:
@@ -55,19 +56,21 @@ loss_function:
 metrics: {}
 
 optimizer:
-  _target_: torch.optim.AdamW
+  _target_: torch.optim.Adam
   lr: 0.0002
   betas: [0.8, 0.99]
-  weight_decay: 0.0
 
 optimizer_d:
-  _target_: torch.optim.AdamW
+  _target_: torch.optim.Adam
   lr: 0.0002
   betas: [0.8, 0.99]
-  weight_decay: 0.0
 
 
 lr_scheduler:
+  _target_: torch.optim.lr_scheduler.ExponentialLR
+  gamma: 0.999
+
+lr_scheduler_d:
   _target_: torch.optim.lr_scheduler.ExponentialLR
   gamma: 0.999
 

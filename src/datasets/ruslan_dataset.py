@@ -96,6 +96,7 @@ class RuslanWavDataset(Dataset):
         if self.normalize:
             m = wav.abs().max().clamp(min=1e-8)
             wav = wav / m
+            wav = wav * 0.95
 
         wav = wav.clamp(-1.0, 1.0)
         wav = self._crop_or_pad(wav)

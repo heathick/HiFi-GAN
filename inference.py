@@ -1,66 +1,105 @@
-import warnings
+import argparse
+from pathlib import Path
 
-import hydra
+import soundfile as sf
 import torch
+import torchaudio
+from hydra import compose, initialize
 from hydra.utils import instantiate
 
-from src.datasets.data_utils import get_dataloaders
-from src.trainer import Inferencer
-from src.utils.init_utils import set_random_seed
-from src.utils.io_utils import ROOT_PATH
 
-warnings.filterwarnings("ignore", category=UserWarning)
+def list_wavs(in_dir: Path):
+    wavs = []
+    for p in in_dir.rglob("*.wav"):
+        name = p.name
+        if name.startswith("._") or name.startswith("."):
+            continue
+        wavs.append(p)
+    return sorted(wavs)
 
 
-@hydra.main(version_base=None, config_path="src/configs", config_name="inference")
-def main(config):
-    """
-    Main script for inference. Instantiates the model, metrics, and
-    dataloaders. Runs Inferencer to calculate metrics and (or)
-    save predictions.
+def load_generator_from_ckpt(cfg, ckpt_path: str, device: str):
+    model = instantiate(cfg.model).to(device)
 
-    Args:
-        config (DictConfig): hydra experiment config.
-    """
-    set_random_seed(config.inferencer.seed)
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
 
-    if config.inferencer.device == "auto":
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+ 
+    if isinstance(ckpt, dict) and "generator" in ckpt:
+        state = ckpt["generator"]
     else:
-        device = config.inferencer.device
+        state = ckpt
 
-    # setup data_loader instances
-    # batch_transforms should be put on device
-    dataloaders, batch_transforms = get_dataloaders(config, device)
+    model.G.load_state_dict(state, strict=True)
+    model.G.eval()
+    return model.G
 
-    # build model architecture, then print to console
-    model = instantiate(config.model).to(device)
-    print(model)
 
-    # get metrics
-    metrics = instantiate(config.metrics)
+@torch.no_grad()
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--ckpt", required=True, help="checkpoints/best.pt or latest.pt")
+    parser.add_argument("--in_dir", required=True, help="input folder with wav files")
+    parser.add_argument("--out_dir", required=True, help="output folder")
+    parser.add_argument("--config", default="baseline", help="config name in src/configs (e.g., baseline)")
+    parser.add_argument("--device", default="cuda")
+    args = parser.parse_args()
 
-    # save_path for model predictions
-    save_path = ROOT_PATH / "data" / "saved" / config.inferencer.save_path
-    save_path.mkdir(exist_ok=True, parents=True)
+    in_dir = Path(args.in_dir)
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    inferencer = Inferencer(
-        model=model,
-        config=config,
-        device=device,
-        dataloaders=dataloaders,
-        batch_transforms=batch_transforms,
-        save_path=save_path,
-        metrics=metrics,
-        skip_model_load=False,
-    )
+    if not in_dir.exists():
+        raise FileNotFoundError(f"in_dir does not exist: {in_dir}")
 
-    logs = inferencer.run_inference()
+    with initialize(config_path="src/configs", version_base=None):
+        cfg = compose(config_name=args.config)
 
-    for part in logs.keys():
-        for key, value in logs[part].items():
-            full_key = part + "_" + key
-            print(f"    {full_key:15s}: {value}")
+    device = args.device if (args.device.startswith("cuda") and torch.cuda.is_available()) else "cpu"
+
+    mel = instantiate(cfg.mel_transform).to(device)
+    G = load_generator_from_ckpt(cfg, args.ckpt, device)
+
+    target_sr = int(cfg.mel_transform.sr)
+
+    wav_paths = list_wavs(in_dir)
+    print(f"Found {len(wav_paths)} wav files")
+
+    resamplers = {}
+
+    for i, wav_path in enumerate(wav_paths, 1):
+        rel = wav_path.relative_to(in_dir)
+        out_path = out_dir / rel
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            wav, sr = sf.read(str(wav_path))
+        except Exception as e:
+            print(f"SKIP unreadable: {wav_path} ({e})")
+            continue
+
+        if wav.ndim > 1:
+            wav = wav.mean(axis=1)
+
+        wav_t = torch.from_numpy(wav).float().unsqueeze(0)
+        if sr != target_sr:
+            key = (sr, target_sr)
+            if key not in resamplers:
+                resamplers[key] = torchaudio.transforms.Resample(sr, target_sr)
+            wav_t = resamplers[key](wav_t)
+            sr = target_sr
+
+        wav_t = wav_t.to(device)
+
+
+        logmel = mel(wav_t)
+        y = G(logmel).squeeze().detach().cpu().numpy()
+
+        sf.write(str(out_path), y, sr)
+
+        if i % 50 == 0 or i == len(wav_paths):
+            print(f"[{i}/{len(wav_paths)}] wrote {out_path}")
+
+    print("Done.")
 
 
 if __name__ == "__main__":
