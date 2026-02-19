@@ -43,7 +43,6 @@ class HiFiGANMel(nn.Module):
         self.center = center
         self.pad_mode = pad_mode
 
-        # window is registered as buffer so it moves with .to(device)
         self.register_buffer("window", torch.hann_window(win_length), persistent=False)
         self.register_buffer("mel_basis", self._build_mel_basis(), persistent=False)
 
@@ -54,7 +53,6 @@ class HiFiGANMel(nn.Module):
         return 700.0 * (10.0 ** (mel / 2595.0) - 1.0)
 
     def _build_mel_basis(self) -> torch.Tensor:
-        # Build mel filterbank in torch (no librosa dependency)
         n_freqs = self.n_fft // 2 + 1
         fmin = torch.tensor(self.fmin, dtype=torch.float32)
         fmax = torch.tensor(self.fmax, dtype=torch.float32)
@@ -64,13 +62,11 @@ class HiFiGANMel(nn.Module):
         m_pts = torch.linspace(m_min, m_max, self.n_mels + 2)
 
         f_pts = self._mel_to_hz(m_pts)
-        # FFT bin frequencies
         fft_freqs = torch.linspace(0, self.sr / 2, n_freqs)
 
         fb = torch.zeros(self.n_mels, n_freqs)
         for i in range(self.n_mels):
             f_left, f_center, f_right = f_pts[i], f_pts[i + 1], f_pts[i + 2]
-            # triangular filters
             left_slope = (fft_freqs - f_left) / (f_center - f_left + 1e-8)
             right_slope = (f_right - fft_freqs) / (f_right - f_center + 1e-8)
             fb[i] = torch.clamp(torch.minimum(left_slope, right_slope), min=0.0)
@@ -85,7 +81,6 @@ class HiFiGANMel(nn.Module):
         if wav.dim() == 1:
             wav = wav.unsqueeze(0)
 
-        # (optional) padding like in many hifigan repos
         pad = (self.n_fft - self.hop) // 2
         wav = torch.nn.functional.pad(wav, (pad, pad), mode=self.pad_mode)
 
@@ -98,7 +93,8 @@ class HiFiGANMel(nn.Module):
             center=self.center,
             return_complex=True,
         )
-        mag = torch.abs(stft)  # [B, n_freq, frames]
-        mel = torch.matmul(self.mel_basis.to(mag.device), mag)  # [B, n_mels, frames]
+        mag = torch.abs(stft)
+        mel = torch.matmul(self.mel_basis.to(mag.device), mag)
         mel = spectral_normalize_torch(mel)
         return mel
+
