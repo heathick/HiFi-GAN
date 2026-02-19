@@ -32,14 +32,11 @@ def feature_matching_loss(f_real, f_fake) -> torch.Tensor:
             fr = fr_l
             ff = ff_l
 
-            # Ensure same rank
             if fr.dim() != ff.dim():
-                # This shouldn't happen in normal HiFi-GAN, but guard anyway
                 d = min(fr.dim(), ff.dim())
                 fr = fr.view(*fr.shape[:d])
                 ff = ff.view(*ff.shape[:d])
 
-            # Crop all spatial/time dims (from dim=2 onward)
             if fr.shape != ff.shape:
                 slices = [slice(None), slice(None)]
                 for d in range(2, fr.dim()):
